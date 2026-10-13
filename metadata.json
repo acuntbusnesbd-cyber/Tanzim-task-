@@ -1,0 +1,8 @@
+{
+  "name": "CGPI Routine Pro",
+  "description": "Manage class schedules, subjects, and teachers with automated repeat routines and timely notifications for every upcoming task.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
