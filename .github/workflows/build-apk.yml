@@ -6,6 +6,10 @@ on:
   pull_request:
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     name: Build Debug APK
@@ -21,27 +25,18 @@ jobs:
           distribution: 'temurin'
           java-version: '21'
 
-      - name: Setup Android SDK Platform & Accept Licenses
+      - name: Setup Android SDK Platform & Licenses
         run: |
           export ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
           export ANDROID_SDK_ROOT="$ANDROID_HOME"
           echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
           echo "ANDROID_SDK_ROOT=$ANDROID_HOME" >> $GITHUB_ENV
 
-          # Fix permissions on runner SDK directory so runner user and Gradle can read/write
-          sudo chown -R $USER:$USER "$ANDROID_HOME" 2>/dev/null || sudo chmod -R 777 "$ANDROID_HOME" 2>/dev/null || true
+          # Ensure license directory exists and runner user has write permissions
+          sudo mkdir -p "$ANDROID_HOME/licenses" "$ANDROID_HOME/platforms" 2>/dev/null || true
+          sudo chown -R $USER:$USER "$ANDROID_HOME/licenses" 2>/dev/null || sudo chmod -R 777 "$ANDROID_HOME/licenses" 2>/dev/null || true
 
-          # Add cmdline-tools and platform-tools to PATH
-          if [ -d "$ANDROID_HOME/cmdline-tools/latest/bin" ]; then
-            echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> $GITHUB_PATH
-            export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
-          fi
-          if [ -d "$ANDROID_HOME/platform-tools" ]; then
-            echo "$ANDROID_HOME/platform-tools" >> $GITHUB_PATH
-            export PATH="$ANDROID_HOME/platform-tools:$PATH"
-          fi
-
-          # Accept all licenses in both SDK directory and user home
+          # Write all Android SDK license agreements
           for LIC_DIR in "$ANDROID_HOME/licenses" "$HOME/.android/licenses"; do
             mkdir -p "$LIC_DIR"
             printf "24333f8a63b6825ea9c5514f83c2829b004d1fee\nd56f5187479451eabf01fb78af6dfcb131a6481e\n84831b9409646a918e30573bab4c9c91346d8abd\n79124426920f4f14ab503d368d33a2b429d81e33\n8933bad161af4b78b1149d4e0aa3b3b02c04f026\n" > "$LIC_DIR/android-sdk-license"
@@ -53,30 +48,17 @@ jobs:
             printf "ceff83576aac4f7f37cb98fe189e9fb3c49d3b81\n" > "$LIC_DIR/android-googlexr-license"
           done
 
-          # Install Platform 36.1, Platform 36, and build-tools 36.0.0
-          SDK_BIN=""
-          if [ -x "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" ]; then
-            SDK_BIN="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
-          elif command -v sdkmanager >/dev/null 2>&1; then
-            SDK_BIN="$(command -v sdkmanager)"
-          fi
-
-          if [ -n "$SDK_BIN" ]; then
-            yes 2>/dev/null | "$SDK_BIN" --licenses || true
-            "$SDK_BIN" --install "platforms;android-36.1" "platforms;android-36" "build-tools;36.0.0" "platform-tools" || true
-          fi
-
       - name: Prepare Secrets and Keystore
         run: |
           # 1. Environment configuration for Secrets Gradle plugin
-          if [ ! -f .env ]; then
-            cp .env.example .env 2>/dev/null || touch .env
+          touch .env
+          if [ -f .env.example ]; then
+            cp -f .env.example .env 2>/dev/null || true
           fi
-          if [ ! -f app/.env ]; then
-            cp .env app/.env 2>/dev/null || touch app/.env
-          fi
+          mkdir -p app
+          cp -f .env app/.env 2>/dev/null || true
 
-          # 2. Ensure google-services.json exists and has valid configuration
+          # 2. Ensure google-services.json exists and is valid
           if [ ! -f app/google-services.json ] || [ ! -s app/google-services.json ]; then
             cat << 'EOF' > app/google-services.json
           {
@@ -132,6 +114,11 @@ jobs:
             keytool -genkeypair -v -keystore debug.keystore -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 -storepass android -keypass android -dname "CN=Android Debug,O=Android,C=US"
           fi
 
+          # Ensure fallback my-upload-key.jks exists if release signing is ever checked
+          if [ ! -f my-upload-key.jks ]; then
+            cp debug.keystore my-upload-key.jks 2>/dev/null || true
+          fi
+
           # 4. Normalize line endings and set execute permissions
           sed -i 's/\r$//' gradlew 2>/dev/null || true
           chmod +x ./gradlew
@@ -147,3 +134,4 @@ jobs:
           name: CGPI-Routine-Pro-APK
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
+          overwrite: true
