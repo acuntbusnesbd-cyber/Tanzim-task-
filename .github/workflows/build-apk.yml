@@ -20,38 +20,104 @@ jobs:
         with:
           distribution: 'temurin'
           java-version: '21'
+          cache: 'gradle'
 
-      - name: Prepare Build Environment
+      - name: Setup Android SDK Platform & Accept Licenses
         run: |
-          # Ensure google-services.json exists and matches the package name: com.example.frfxjv
-          if [ ! -f app/google-services.json ]; then
-            echo '{"project_info":{"project_number":"315963306836","project_id":"gen-lang-client-0400861689","storage_bucket":"gen-lang-client-0400861689.firebasestorage.app"},"client":[{"client_info":{"mobilesdk_app_id":"1:315963306836:android:d126a2ac3369cf7c564ec1","android_client_info":{"package_name":"com.example.frfxjv"}},"api_key":[{"current_key":"dummy"}],"services":{"appinvite_service":{"other_platform_oauth_client":[]}}}]}' > app/google-services.json
+          set +e
+          export ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          export ANDROID_SDK_ROOT="$ANDROID_HOME"
+          echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
+          echo "ANDROID_SDK_ROOT=$ANDROID_HOME" >> $GITHUB_ENV
+
+          # Accept all licenses across all standard license paths
+          for LIC_DIR in "$ANDROID_HOME/licenses" "$HOME/.android/licenses"; do
+            mkdir -p "$LIC_DIR"
+            printf "24333f8a63b6825ea9c5514f83c2829b004d1fee\nd56f5187479451eabf01fb78af6dfcb131a6481e\n84831b9409646a918e30573bab4c9c91346d8abd\n79124426920f4f14ab503d368d33a2b429d81e33\n8933bad161af4b78b1149d4e0aa3b3b02c04f026\n" > "$LIC_DIR/android-sdk-license"
+            printf "84831b9409646a918e30573bab4c9c91346d8abd\n" > "$LIC_DIR/android-sdk-preview-license"
+            printf "601085b94cd77f0b54ff86406957099ebe79c4d6\n" > "$LIC_DIR/android-googletv-license"
+            printf "33b6a2b64607f11b759f320ef9dff4ae5c47d97a\n2544c4e71a28a304e4f454c0e18d21f4863d047e\n" > "$LIC_DIR/google-gdk-license"
+            printf "e9acab5b5fbb560a72cfaecce8946896ff6aab9d\n" > "$LIC_DIR/mips-android-sysimage-license"
+            printf "859f317696f67ef3d7f30a50a5560e7834b43903\n" > "$LIC_DIR/android-sdk-arm-dbt-license"
+            printf "ceff83576aac4f7f37cb98fe189e9fb3c49d3b81\n" > "$LIC_DIR/android-googlexr-license"
+          done
+
+          # Install Platform 36 and build-tools if sdkmanager is available
+          SDK_BIN=""
+          if [ -x "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" ]; then
+            SDK_BIN="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          elif command -v sdkmanager >/dev/null 2>&1; then
+            SDK_BIN="$(command -v sdkmanager)"
           fi
 
-          # Environment configuration for secrets plugin
+          if [ -n "$SDK_BIN" ]; then
+            yes 2>/dev/null | "$SDK_BIN" --licenses >/dev/null 2>&1 || true
+            "$SDK_BIN" --install "platforms;android-36" "build-tools;36.0.0" >/dev/null 2>&1 || true
+          fi
+          set -e
+
+      - name: Prepare Secrets and Keystore
+        run: |
+          # 1. Environment configuration for Secrets Gradle plugin
           if [ ! -f .env ]; then
             cp .env.example .env 2>/dev/null || touch .env
           fi
-
-          # Handle Debug Keystore
-          if [ -f debug.keystore.base64 ]; then
-            base64 -d debug.keystore.base64 > debug.keystore
-          elif [ ! -f debug.keystore ]; then
-            # Generate a new debug keystore if missing
-            keytool -genkey -v -keystore debug.keystore -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 -storepass android -keypass android -dname "CN=Android Debug,O=Android,C=US"
+          if [ ! -f app/.env ]; then
+            cp .env app/.env 2>/dev/null || touch app/.env
           fi
 
-          # Fix gradlew permissions and line endings (CRLF to LF)
-          sed -i 's/\r$//' gradlew
+          # 2. Ensure google-services.json exists and has valid configuration
+          if [ ! -f app/google-services.json ] || [ ! -s app/google-services.json ]; then
+            cat << 'EOF' > app/google-services.json
+          {
+            "project_info": {
+              "project_number": "315963306836",
+              "project_id": "gen-lang-client-0400861689",
+              "storage_bucket": "gen-lang-client-0400861689.firebasestorage.app"
+            },
+            "client": [
+              {
+                "client_info": {
+                  "mobilesdk_app_id": "1:315963306836:android:d126a2ac3369cf7c564ec1",
+                  "android_client_info": {
+                    "package_name": "com.example.frfxjv"
+                  }
+                },
+                "api_key": [
+                  {
+                    "current_key": "dummy"
+                  }
+                ],
+                "services": {
+                  "appinvite_service": {
+                    "other_platform_oauth_client": []
+                  }
+                }
+              }
+            ],
+            "configuration_version": "1"
+          }
+          EOF
+          fi
+
+          # 3. Ensure valid debug.keystore exists and passes keytool verification
+          rm -f debug.keystore
+          if [ -f debug.keystore.base64 ]; then
+            tr -d '\r\n ' < debug.keystore.base64 | base64 -d > debug.keystore 2>/dev/null || true
+          fi
+
+          if ! keytool -list -keystore debug.keystore -storepass android >/dev/null 2>&1; then
+            rm -f debug.keystore
+            keytool -genkeypair -v -keystore debug.keystore -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 -storepass android -keypass android -dname "CN=Android Debug,O=Android,C=US"
+          fi
+
+          # 4. Normalize line endings and set execute permissions
+          sed -i 's/\r$//' gradlew 2>/dev/null || true
           chmod +x ./gradlew
 
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          cache-disabled: false
-
       - name: Build Debug APK
-        run: ./gradlew :app:assembleDebug --stacktrace --info --no-daemon
+        run: |
+          ./gradlew assembleDebug --stacktrace --no-daemon
 
       - name: Upload Debug APK
         if: success()
